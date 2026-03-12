@@ -9,9 +9,10 @@ NODES_FILE = "nodes.csv"
 G = nx.Graph()
 with open(EDGES_FILE) as f:
     for row in csv.reader(f):
-        if len(row) == 3:
+        if len(row) >= 3:
             src, dst, weight = row[0].strip(), row[1].strip(), float(row[2].strip())
-            G.add_edge(src, dst, weight=weight)
+            capacity = float(row[3].strip()) if len(row) >= 4 else 100.0
+            G.add_edge(src, dst, weight=weight, capacity=capacity)
 
 # Load fixed positions from nodes.csv
 pos = {}
@@ -40,6 +41,19 @@ def pick_node(prompt):
 source = pick_node("\nSelect A (source) node: ")
 target = pick_node("Select Z (target) node: ")
 
+def pick_demand():
+    while True:
+        val = input("Enter demand (Gbps): ").strip()
+        try:
+            d = float(val)
+            if d > 0:
+                return d
+        except ValueError:
+            pass
+        print("  Invalid — enter a positive number")
+
+demand = pick_demand()
+
 failed_edges = set()
 edge_lines = {}
 
@@ -55,6 +69,23 @@ def get_path():
     except (nx.NetworkXNoPath, nx.NodeNotFound):
         return [], None
 
+def compute_flow(path):
+    flow = {}
+    for u, v in G.edges():
+        flow[tuple(sorted([u, v]))] = 0.0
+    for i in range(len(path) - 1):
+        key = tuple(sorted([path[i], path[i + 1]]))
+        flow[key] = demand
+    return flow
+
+def util_color(ratio):
+    if ratio < 0.5:
+        return "green"
+    elif ratio < 0.8:
+        return "orange"
+    else:
+        return "red"
+
 def draw(ax, path, cost):
     global edge_lines
     ax.clear()
@@ -65,6 +96,8 @@ def draw(ax, path, cost):
         for i in range(len(path) - 1):
             path_edges.add(tuple(sorted([path[i], path[i + 1]])))
 
+    flow = compute_flow(path) if path else {}
+
     # Draw each edge individually so they are clickable
     for u, v in G.edges():
         edge_key = tuple(sorted([u, v]))
@@ -74,7 +107,11 @@ def draw(ax, path, cost):
         if edge_key in failed_edges:
             color, lw, ls = "red", 2, "--"
         elif edge_key in path_edges:
-            color, lw, ls = "green", 3, "-"
+            cap = G[u][v]["capacity"]
+            ratio = demand / cap
+            color = util_color(ratio)
+            lw = 3 + ratio * 2
+            ls = "-"
         else:
             color, lw, ls = "lightgray", 2, "-"
 
@@ -85,12 +122,20 @@ def draw(ax, path, cost):
     nx.draw_networkx_nodes(G, pos, ax=ax, node_color="white", node_size=700, edgecolors="black", linewidths=1.5)
     nx.draw_networkx_labels(G, pos, ax=ax, font_size=10, font_weight="bold")
 
-    # Edge weight labels
-    edge_labels = nx.get_edge_attributes(G, "weight")
+    # Edge labels: flow/capacity on path edges, weight elsewhere
+    edge_labels = {}
+    for u, v, data in G.edges(data=True):
+        edge_key = tuple(sorted([u, v]))
+        if edge_key in path_edges:
+            cap = data["capacity"]
+            util = (demand / cap) * 100
+            edge_labels[(u, v)] = f"{demand:.0f}/{cap:.0f} ({util:.0f}%)"
+        else:
+            edge_labels[(u, v)] = data["weight"]
     nx.draw_networkx_edge_labels(G, pos, ax=ax, edge_labels=edge_labels, font_size=8)
 
     if path:
-        title = f"Path: {' -> '.join(path)}  (cost: {cost})  |  click edge to fail/restore"
+        title = f"Path: {' -> '.join(path)}  (cost: {cost}, demand: {demand} Gbps)  |  click edge to fail/restore"
     else:
         title = "No path found  |  click edge to fail/restore"
     ax.set_title(title)
@@ -113,7 +158,12 @@ def on_pick(event):
         print(f"Failed:   {edge_key[0]} -- {edge_key[1]}")
 
     path, cost = get_path()
-    print(f"Path: {' -> '.join(path) if path else 'none'}  (cost: {cost})")
+    if path:
+        cap = G[path[0]][path[1]]["capacity"]
+        util = (demand / cap) * 100
+        print(f"Path: {' -> '.join(path)}  (cost: {cost}) | flow: {demand:.0f}/{cap:.0f} ({util:.0f}%) per hop")
+    else:
+        print("Path: none")
     draw(ax, path, cost)
     fig.canvas.draw()
 
